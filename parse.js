@@ -1793,6 +1793,15 @@ class DocParser {
     } else {
       isBlank = cursor.isBlank();
     }
+    // Inside a table, a line of 0-3 spaces plus exactly one tab is not
+    // blank (marked treats it as an empty row); any other whitespace-only
+    // line still ends the table.
+    if (isBlank && this.leaf && this.leaf.t === 'table') {
+      const rest = cursor.rest();
+      let sp = 0;
+      while (sp < rest.length && rest.charCodeAt(sp) === 32) sp++;
+      if (sp <= 3 && sp + 1 === rest.length && rest.charCodeAt(sp) === 9) isBlank = false;
+    }
 
     // Phase 2: blank line.
     if (isBlank) {
@@ -2073,6 +2082,14 @@ class DocParser {
       return true;
     }
     if (leaf.t === 'table') {
+      // A line of 0-3 spaces + exactly one tab is an empty row.
+      const rest0 = cursor.rest();
+      let sp0 = 0;
+      while (sp0 < rest0.length && rest0.charCodeAt(sp0) === 32) sp0++;
+      if (sp0 <= 3 && sp0 + 1 === rest0.length && rest0.charCodeAt(sp0) === 9) {
+        leaf.rows.push(new Array(leaf.header.length).fill(''));
+        return true;
+      }
       if (cursor.indentAvailable() >= 4 || this.startsInterruptBlock(cursor)) {
         this.leaf = null;
         return false;
