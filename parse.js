@@ -2563,7 +2563,10 @@ class DocParser {
         const info = cursor.s.slice(j).trim();
         const sp = info.search(/[ \t]/);
         const lang = unescapeInline(sp === -1 ? info : info.slice(0, sp));
-        const fence = { t: 'fence', fenceCharCode, fenceLen: len, fenceIndent: indentSkipped, lang, lines: [], closed: false };
+        // Marked strips the opening fence's indent from content lines
+        // for backtick fences only; tilde-fence content keeps its full
+        // indent (marked: `   ~~~\n   x\n   ~~~` -> `   x`).
+        const fence = { t: 'fence', fenceCharCode, fenceLen: len, fenceIndent: c === 96 ? indentSkipped : 0, lang, lines: [], closed: false };
         this.addBlock(fence);
         this.leaf = fence;
         return;
