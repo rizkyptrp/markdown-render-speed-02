@@ -1827,6 +1827,7 @@ class DocParser {
     this.stack = [this.root];
     this.leaf = null;
     this.htmlPending = null;
+    this.tabBaseCol = 0;
     this.curLine = 0;
   }
 
@@ -1891,15 +1892,28 @@ class DocParser {
     const cursor = new LineCursor(line);
     // Phase 1: match open containers top-down.
     let lastMatched = 0;
+    // Tab-expansion base (quotes only): marked expands a leading tab in
+    // content as if the line had only the innermost blockquote's prefix
+    // (e.g. `> > \t` expands the tab to 2 spaces, not 4). Lists do not
+    // get this treatment (a deeply nested list keeps the absolute column).
+    let tabBaseCol = 0;
+    let innermostIsQuote = false;
     for (let d = 1; d < this.stack.length; d++) {
       const container = this.stack[d];
       const saved = cursor.save();
       let ok = true;
-      if (container.t === 'quote') ok = this.matchBlockquote(cursor);
-      else if (container.t === 'item') ok = this.matchListItem(cursor, container);
+      if (container.t === 'quote') {
+        tabBaseCol = cursor.col;
+        ok = this.matchBlockquote(cursor);
+        if (ok) innermostIsQuote = true;
+      } else if (container.t === 'item') {
+        ok = this.matchListItem(cursor, container);
+        if (ok) innermostIsQuote = false;
+      }
       if (!ok) { cursor.restore(saved); break; }
       lastMatched = d;
     }
+    this.tabBaseCol = innermostIsQuote ? tabBaseCol : 0;
     const allMatched = lastMatched === this.stack.length - 1;
     // Blankness: if all containers matched and the innermost one is a
     // blockquote, the line is blank only when nothing remains after the
@@ -1935,7 +1949,7 @@ class DocParser {
         if (this.leaf.t === 'fence') {
           cursor.skipFenceIndent(this.leaf.fenceIndent);
           let rest = cursor.rest();
-          if (this.stack.length > 1) rest = expandLeadingTabs(rest, cursor.col);
+          if (this.stack.length > 1) rest = expandLeadingTabs(rest, cursor.col - this.tabBaseCol);
           this.leaf.lines.push(rest);
           return;
         }
@@ -2174,7 +2188,7 @@ class DocParser {
       cursor.restore(saved);
       cursor.skipFenceIndent(leaf.fenceIndent);
       let fenceRest = cursor.rest();
-      if (this.stack.length > 1) fenceRest = expandLeadingTabs(fenceRest, cursor.col);
+      if (this.stack.length > 1) fenceRest = expandLeadingTabs(fenceRest, cursor.col - this.tabBaseCol);
       leaf.lines.push(fenceRest);
       return true;
     }
@@ -2235,7 +2249,7 @@ class DocParser {
     let newLine = cursor.rest();
     // Inside a container, leading tabs of a paragraph line expand to
     // spaces (top-level lines keep their tabs verbatim).
-    if (this.stack.length > 1) newLine = expandLeadingTabs(newLine, cursor.col);
+    if (this.stack.length > 1) newLine = expandLeadingTabs(newLine, cursor.col - this.tabBaseCol);
     // If the new line continues a pending link ref def (a dest or title
     // line), absorb it: finalizing the def now would lose the title.
     const content = leaf.lines.join('\n');
@@ -2615,7 +2629,7 @@ class DocParser {
       // A whitespace-only line does not start a paragraph.
       if (cursor.isBlank()) return;
       let firstLine = cursor.rest();
-      if (this.stack.length > 1) firstLine = expandLeadingTabs(firstLine, pc);
+      if (this.stack.length > 1) firstLine = expandLeadingTabs(firstLine, pc - this.tabBaseCol);
       const para = { t: 'para', lines: [firstLine], task: null, content: null, lastLazy: false };
       const parent = this.stack[this.stack.length - 1];
       if (parent.t === 'item' && parent.children.length === 0) {
