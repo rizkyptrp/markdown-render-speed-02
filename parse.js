@@ -970,11 +970,14 @@ function resolveEmphasis(items) {
     let oi = ci - 1;
     let sawOddBlock = false;
     let matched = false;
+    // Snapshot openersBottom before this closer starts: a bottom set by
+    // this closer's own match must not block its subsequent matches
+    // (marked: `*a **b***` forms both the strong and the outer em).
+    const bottom0 = closer.ch !== '~' ? (openersBottom.get(closer.ch) ?? -1) : -1;
     while (closer.len > 0 && oi >= 0) {
       // A len-1 closer respects openersBottom: nothing below it can match.
       if (closer.ch !== '~' && closer.len < 2) {
-        const bottom = openersBottom.get(closer.ch) ?? -1;
-        if (oi <= bottom) break;
+        if (oi <= bottom0) break;
       }
       const opener = delims[oi];
       if (!opener.active || opener.len === 0 || !opener.canOpen || opener.ch !== closer.ch) { oi--; continue; }
@@ -982,8 +985,7 @@ function resolveEmphasis(items) {
       // not an em match (marked: `**a *b **c** d* e**` matches the
       // outer `**` pair, leaving the inner `*` literal).
       if (closer.ch !== '~' && closer.len >= 2) {
-        const bottom = openersBottom.get(closer.ch) ?? -1;
-        if (oi <= bottom && opener.len < 2) { oi--; continue; }
+        if (oi <= bottom0 && opener.len < 2) { oi--; continue; }
       }
       if (closer.ch === '~' && opener.len !== closer.len) { oi--; continue; }
       if (closer.ch !== '~') {
