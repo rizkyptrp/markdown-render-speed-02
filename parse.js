@@ -10,7 +10,39 @@
 //     emphasis so emphasis wins over an email local part.
 
 export function parse(markdown) {
+  inLinkGlobal = false;
   return new DocParser(markdown).run();
+}
+
+// Marked tracks an "inside a link" state from inline <a> tags that
+// persists across blocks: once an unclosed <a> open tag is seen, bare
+// autolinks and emails are suppressed for the rest of the document
+// (angle autolinks still form), until an inline </a> clears it. HTML
+// blocks do not affect it. Reset per parse() call above.
+let inLinkGlobal = false;
+
+// For an inline HTML tag string, return true if it opens an <a> (sets
+// inLink), false if it closes one (clears inLink), null otherwise.
+// `<a/>` (slash immediately after the name/attrs) is self-closing and
+// does not open; `<a />` (whitespace before the slash) DOES open.
+function htmlLinkState(tag) {
+  if (tag.length < 3 || tag.charCodeAt(0) !== 60) return null;
+  let j = 1;
+  let closing = false;
+  if (tag.charCodeAt(j) === 47) { closing = true; j++; }
+  const c = tag.charCodeAt(j);
+  if (c !== 97 && c !== 65) return null;
+  const after = j + 1 < tag.length ? tag.charCodeAt(j + 1) : -1;
+  if (after !== 62 && after !== 32 && after !== 9 && after !== 47 && after !== 10) return null;
+  if (closing) return false;
+  // Self-closing only when the tag ends with `/>` and the char before
+  // the slash is not whitespace.
+  if (tag.length >= 2 && tag.charCodeAt(tag.length - 1) === 62 &&
+      tag.charCodeAt(tag.length - 2) === 47) {
+    const before = tag.length >= 3 ? tag.charCodeAt(tag.length - 3) : -1;
+    if (before !== 32 && before !== 9 && before !== 10) return null;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -981,13 +1013,23 @@ function suppressAutolinks(children) {
   }
 }
 
-function resolveEmails(items) {
+function resolveEmails(items, inLinkStart) {
   // Note: no recursion into link/image children — emails do not form
   // inside link text (and image children are plain alt text).
+  // inLink is re-derived per text run from the state at the start of
+  // this inline parse, so an email before an <a> tag in the same
+  // paragraph still links, while one after it (or in a later block,
+  // once the cross-block state is set) does not.
+  let inLink = inLinkStart;
   const out = [];
   let i = 0;
   while (i < items.length) {
     const it = items[i];
+    if (it.k === 5) {
+      const ls = htmlLinkState(it.s);
+      if (ls !== null) inLink = ls;
+      out.push(it); i++; continue;
+    }
     const textLike = (it.k === 0 && !it.esc) || (it.k === 1 && it.uo.length === 0 && it.uc.length === 0 && it.len > 0);
     if (!textLike) { out.push(it); i++; continue; }
     // Collect a maximal run of text-like items, keeping the original
@@ -1005,7 +1047,7 @@ function resolveEmails(items) {
       merged += str;
       i++;
     }
-    if (merged.indexOf('@') === -1) {
+    if (merged.indexOf('@') === -1 || inLink) {
       for (let r = 0; r < run.length; r++) out.push(run[r].item);
       continue;
     }
@@ -1129,6 +1171,10 @@ function parseInline(s, refs) {
   const opens = [];
   let textStart = 0;
   const n = s.length;
+  // Snapshot the cross-block inLink state: resolveEmails re-derives the
+  // per-position state from this (the main scan updates the global as
+  // it goes, so by the time emails resolve the global is the END state).
+  const inLinkStart = inLinkGlobal;
   const flush = (upTo) => { if (upTo > textStart) items.push({ k: 0, s: s.slice(textStart, upTo) }); };
   let i = 0;
   while (i < n) {
@@ -1257,6 +1303,8 @@ function parseInline(s, refs) {
       if (html) {
         flush(i);
         items.push({ k: 5, s: html[0] });
+        const ls = htmlLinkState(html[0]);
+        if (ls !== null) inLinkGlobal = ls;
         i = html[1];
         textStart = i;
         continue;
@@ -1273,6 +1321,9 @@ function parseInline(s, refs) {
       continue;
     }
     if (c === 119 || c === 104 || c === 72 || c === 102 || c === 70 || c === 109 || c === 120) {
+      // Inside an unclosed <a> (cross-block state), bare autolinks do
+      // not form (angle autolinks still do; see the '<' branch above).
+      if (inLinkGlobal) { i++; continue; }
       let al = matchAutolink(s, i);
       if (al && opens.length > 0) {
         // A bare autolink must not swallow a `]` that closes an open
@@ -1320,7 +1371,7 @@ function parseInline(s, refs) {
   }
   flush(n);
   resolveEmphasis(items);
-  resolveEmails(items);
+  resolveEmails(items, inLinkStart);
   return renderInline(items);
 }
 
