@@ -890,6 +890,36 @@ function linkTextHasLink(items, open) {
   return false;
 }
 
+// Marked's link tokenizer pairs backtick runs in the link text; an
+// ODD number of unescaped backtick runs blocks an inline or full-ref
+// link/image from forming — unless the link text ends with a backtick
+// run (a trailing code span: `[a \`\`b \` c\`\`](u)` links, but
+// `[a \`\`b \` c\`\` d](u)` does not). Escaped backticks (`\``) do not
+// count. Shortcut refs are unaffected.
+function linkTextHasOddBackticks(s, start, end) {
+  let runs = 0;
+  let p = start;
+  while (p < end) {
+    if (s.charCodeAt(p) === 96) {
+      // Escaped if preceded by an odd run of backslashes.
+      let bs = 0;
+      let q = p - 1;
+      while (q >= start && s.charCodeAt(q) === 92) { bs++; q--; }
+      if (bs % 2 === 0) {
+        runs++;
+        // Skip the rest of this run.
+        while (p < end && s.charCodeAt(p) === 96) p++;
+        continue;
+      }
+    }
+    p++;
+  }
+  if (runs % 2 === 0) return false;
+  // A trailing backtick run (code span at the end of the link text)
+  // does not block.
+  return s.charCodeAt(end - 1) !== 96;
+}
+
 function tryFormLink(s, i, items, open, refs) {
   const n = s.length;
   const after = i + 1 < n ? s.charCodeAt(i + 1) : -1;
@@ -897,6 +927,7 @@ function tryFormLink(s, i, items, open, refs) {
     const parsed = parseInlineLinkTail(s, i + 1);
     if (parsed) {
       if (!open.image && linkTextHasLink(items, open)) return null;
+      if (linkTextHasOddBackticks(s, open.textStart, i)) return null;
       return { open, href: parsed.href, title: parsed.title, end: parsed.end };
     }
     // Inline link failed to parse: fall through to shortcut ref.
@@ -912,6 +943,7 @@ function tryFormLink(s, i, items, open, refs) {
     const def = refs.get(norm);
     if (!def) return null;
     if (!open.image && linkTextHasLink(items, open)) return null;
+    if (linkTextHasOddBackticks(s, open.textStart, i)) return null;
     return { open, href: def.href, title: def.title, end: labelEnd + 1 };
   }
   const label = s.slice(open.textStart, i);
