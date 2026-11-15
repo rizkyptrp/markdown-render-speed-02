@@ -939,12 +939,20 @@ function resolveEmphasis(items) {
     let sawOddBlock = false;
     let matched = false;
     while (closer.len > 0 && oi >= 0) {
-      // A closer that can only form <em> (len 1) respects openersBottom;
-      // a longer closer (strong-capable) searches from the beginning.
-      const bottom = (closer.ch !== '~' && closer.len === 1) ? (openersBottom.get(closer.ch) ?? -1) : -1;
-      if (oi <= bottom) break;
+      // A len-1 closer respects openersBottom: nothing below it can match.
+      if (closer.ch !== '~' && closer.len < 2) {
+        const bottom = openersBottom.get(closer.ch) ?? -1;
+        if (oi <= bottom) break;
+      }
       const opener = delims[oi];
       if (!opener.active || opener.len === 0 || !opener.canOpen || opener.ch !== closer.ch) { oi--; continue; }
+      // A len-2 closer can form a strong match below openersBottom, but
+      // not an em match (marked: `**a *b **c** d* e**` matches the
+      // outer `**` pair, leaving the inner `*` literal).
+      if (closer.ch !== '~' && closer.len >= 2) {
+        const bottom = openersBottom.get(closer.ch) ?? -1;
+        if (oi <= bottom && opener.len < 2) { oi--; continue; }
+      }
       if (closer.ch === '~' && opener.len !== closer.len) { oi--; continue; }
       if (closer.ch !== '~') {
         const eitherBoth = (opener.canOpen && opener.canClose) || (closer.canOpen && closer.canClose);
@@ -971,9 +979,17 @@ function resolveEmphasis(items) {
       for (let d = oi + 1; d < ci; d++) {
         // A same-char delimiter left unmatched between opener and closer
         // pulls this closer's leftover chars inside the emphasis
-        // (marked: `*foo**bar**` -> `<em>foo**bar*</em>`, but
-        // `*foo**` -> `<em>foo</em>*`).
-        if (delims[d].ch === closer.ch && delims[d].len > 0) closer.leftoverInside = true;
+        // (marked: `*foo**bar**` -> `<em>foo**bar*</em>`, but `*foo**`
+        // -> `<em>foo</em>*`). A strong match also pulls the leftover
+        // inside when a matched <em> pair sits between (marked:
+        // `**a *b* c***` -> `<strong>a <em>b</em> c*</strong>`, but
+        // `*a *b* c**` -> `<em>a <em>b</em> c</em>*` and `**foo***` ->
+        // `<strong>foo</strong>*`).
+        if (delims[d].ch === closer.ch &&
+            (delims[d].len > 0 ||
+             (n === 2 && (delims[d].uo.includes('em') || delims[d].uc.includes('em'))))) {
+          closer.leftoverInside = true;
+        }
         delims[d].active = false;
       }
       // openersBottom is set when a closer that can itself open pairs with
