@@ -492,8 +492,9 @@ function trimAutolink(url) {
   return url;
 }
 
-function matchAutolink(s, i) {
+function matchAutolink(s, i, limit) {
   const n = s.length;
+  const end = limit === undefined ? n : Math.min(n, limit);
   const c = s.charCodeAt(i);
   if (c === 119 && s.startsWith('www.', i)) { // www.
     if (i > 0) {
@@ -501,11 +502,11 @@ function matchAutolink(s, i) {
       if (!(pc === 32 || pc === 9 || pc === 10 || pc === 40 || pc === 42 || pc === 95 || pc === 126)) return null;
     }
     const start = i + 4;
-    if (start >= n) return null;
+    if (start >= end) return null;
     const sc = s.charCodeAt(start);
     if (!isWordCode(sc) && sc !== 45) return null;
     let j = start;
-    while (j < n) {
+    while (j < end) {
       const cc = s.charCodeAt(j);
       if (cc === 32 || cc === 9 || cc === 10 || cc === 60 || cc < 32 || cc === 127) break;
       j++;
@@ -522,11 +523,11 @@ function matchAutolink(s, i) {
     else if (lower.startsWith('ftp://')) prefixLen = 6;
     else return null;
     const start = i + prefixLen;
-    if (start >= n) return null;
+    if (start >= end) return null;
     const sc = s.charCodeAt(start);
     if (!isWordCode(sc) && sc !== 45) return null;
     let j = start;
-    while (j < n) {
+    while (j < end) {
       const cc = s.charCodeAt(j);
       if (cc === 32 || cc === 9 || cc === 10 || cc === 60 || cc < 32 || cc === 127) break;
       j++;
@@ -857,8 +858,7 @@ function linkTextHasLink(items, open) {
   return false;
 }
 
-function tryFormLink(s, i, items, opens, refs) {
-  const open = opens[opens.length - 1];
+function tryFormLink(s, i, items, open, refs) {
   const n = s.length;
   const after = i + 1 < n ? s.charCodeAt(i + 1) : -1;
   if (after === 40) { // (
@@ -904,6 +904,8 @@ function resolveEmphasis(items) {
     const closer = delims[ci];
     if (!closer.canClose || closer.len === 0 || !closer.active) continue;
     let oi = ci - 1;
+    let sawOddBlock = false;
+    let matched = false;
     while (closer.len > 0 && oi >= 0) {
       // A closer that can only form <em> (len 1) respects openersBottom;
       // a longer closer (strong-capable) searches from the beginning.
@@ -915,7 +917,15 @@ function resolveEmphasis(items) {
       if (closer.ch !== '~') {
         const eitherBoth = (opener.canOpen && opener.canClose) || (closer.canOpen && closer.canClose);
         if (eitherBoth && (opener.len + closer.len) % 3 === 0 &&
-            (opener.len % 3 !== 0 || closer.len % 3 !== 0)) { oi--; continue; }
+            (opener.len % 3 !== 0 || closer.len % 3 !== 0)) { sawOddBlock = true; oi--; continue; }
+        // An opener that itself failed as a closer (odd-match) can only
+        // be used by a closer that can open, or one that still has
+        // delimiters left after the match (marked: `*foo**bar** baz*`
+        // matches the outer `*`, but `*foo**bar***` forms strong).
+        if (opener.oddFailed && !closer.canOpen) {
+          const n2 = (opener.len >= 2 && closer.len >= 2) ? 2 : 1;
+          if (closer.len <= n2) { oi--; continue; }
+        }
       }
       let n, tag;
       if (closer.ch === '~') { n = opener.len; tag = 'del'; }
@@ -925,19 +935,37 @@ function resolveEmphasis(items) {
       closer.uc.push(tag);
       opener.len -= n;
       closer.len -= n;
-      for (let d = oi + 1; d < ci; d++) delims[d].active = false;
-      if (closer.canOpen && closer.ch !== '~' && n === 1) openersBottom.set(closer.ch, oi);
+      matched = true;
+      for (let d = oi + 1; d < ci; d++) {
+        // A same-char delimiter left unmatched between opener and closer
+        // pulls this closer's leftover chars inside the emphasis
+        // (marked: `*foo**bar**` -> `<em>foo**bar*</em>`, but
+        // `*foo**` -> `<em>foo</em>*`).
+        if (delims[d].ch === closer.ch && delims[d].len > 0) closer.leftoverInside = true;
+        delims[d].active = false;
+      }
+      // openersBottom is set when a closer that can itself open pairs with
+      // an opener that cannot close: later len-1 closers may not use
+      // openers at or below that opener. (When the opener can also close,
+      // e.g. `*foo**bar**baz*`, no bottom is set and the outer em forms.)
+      if (closer.canOpen && closer.ch !== '~' && !opener.canClose) openersBottom.set(closer.ch, oi);
       if (opener.len === 0) oi--;
     }
+    // A closer that matched nothing and was blocked by the odd-match rule
+    // is marked: later closers may only use it as an opener under the
+    // conditions above.
+    if (!matched && sawOddBlock) closer.oddFailed = true;
   }
 }
 
-// Convert autolink items (kind 6) in `children` back to plain text items.
-// Used when a link forms: autolinks do not form inside link text.
+// Convert BARE autolink items (kind 6, no angle flag) in `children` back to
+// plain text items. Used when a link forms: bare autolinks do not form
+// inside link text, but <...> angle autolinks DO nest (marked renders them
+// as nested <a> elements), so angle autolinks are left alone.
 function suppressAutolinks(children) {
   for (let i = 0; i < children.length; i++) {
     const it = children[i];
-    if (it.k === 6) children[i] = { k: 0, s: it.text };
+    if (it.k === 6 && !it.angle) children[i] = { k: 0, s: it.text };
     else if (it.k === 3) suppressAutolinks(it.children);
   }
 }
@@ -1030,8 +1058,12 @@ function renderInline(items) {
         out += escapeText(it.s);
         break;
       case 1: {
+        // Leftover delimiter chars render before the closing tags only
+        // when an unmatched same-char delimiter sits between opener and
+        // closer (see resolveEmphasis); otherwise after them.
+        if (it.leftoverInside && it.len > 0) out += it.ch.repeat(it.len);
         for (const tag of it.uc) out += tag === 'em' ? '</em>' : tag === 'strong' ? '</strong>' : '</del>';
-        if (it.len > 0) out += it.ch.repeat(it.len);
+        if (!it.leftoverInside && it.len > 0) out += it.ch.repeat(it.len);
         for (let u = it.uo.length - 1; u >= 0; u--) {
           const tag = it.uo[u];
           out += tag === 'em' ? '<em>' : tag === 'strong' ? '<strong>' : '<del>';
@@ -1187,7 +1219,7 @@ function parseInline(s, refs) {
     }
     if (c === 93) { // ]
       if (opens.length > 0) {
-        const link = tryFormLink(s, i, items, opens, refs);
+        const link = tryFormLink(s, i, items, opens[opens.length - 1], refs);
         if (link) {
           flush(i);
           const openIdx = items.indexOf(link.open);
@@ -1221,7 +1253,7 @@ function parseInline(s, refs) {
       const al = parseAngleAutolink(s, i);
       if (al) {
         flush(i);
-        items.push({ k: 6, href: al[0], text: al[1] });
+        items.push({ k: 6, href: al[0], text: al[1], angle: true });
         i = al[2];
         textStart = i;
         continue;
@@ -1230,7 +1262,39 @@ function parseInline(s, refs) {
       continue;
     }
     if (c === 119 || c === 104 || c === 72 || c === 102 || c === 70 || c === 109 || c === 120) {
-      const al = matchAutolink(s, i);
+      let al = matchAutolink(s, i);
+      if (al && opens.length > 0) {
+        // A bare autolink must not swallow a `]` that closes an open
+        // bracket and forms a link there: the link wins (marked's link
+        // tokenizer runs before its autolink tokenizer). Simulate the
+        // `]` handler over each `]` in the autolink's span, in order: a
+        // `]` that forms a link truncates the autolink there; one that
+        // does not pops its opener (as the real handler would) and the
+        // scan continues with the next opener out.
+        let depth = opens.length;
+        let limit = -1;
+        let pops = 0;
+        let j = s.indexOf(']', i + 1);
+        while (j !== -1 && j < al[2] && depth > 0) {
+          if (tryFormLink(s, j, items, opens[depth - 1], refs)) { limit = j; break; }
+          depth--;
+          pops++;
+          j = s.indexOf(']', j + 1);
+        }
+        if (limit !== -1) {
+          // Pop the openers the earlier `]`s would have popped, so the
+          // link forms with the right opener when the parser reaches it.
+          while (pops-- > 0) opens.pop();
+          const al2 = matchAutolink(s, i, limit);
+          if (al2) al = al2;
+          else {
+            // The truncated span is not an autolink after all: treat
+            // this char as plain text (the `]` will form the link).
+            i++;
+            continue;
+          }
+        }
+      }
       if (al) {
         flush(i);
         items.push({ k: 6, href: al[0], text: al[1] });
