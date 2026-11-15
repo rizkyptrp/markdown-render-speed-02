@@ -927,7 +927,7 @@ function tryFormLink(s, i, items, open, refs) {
     const parsed = parseInlineLinkTail(s, i + 1);
     if (parsed) {
       if (!open.image && linkTextHasLink(items, open)) return null;
-      if (linkTextHasOddBackticks(s, open.textStart, i)) return null;
+      if (linkTextHasOddBackticks(s, open.textStart, i)) { open.backtickBlocked = true; return null; }
       return { open, href: parsed.href, title: parsed.title, end: parsed.end };
     }
     // Inline link failed to parse: fall through to shortcut ref.
@@ -943,7 +943,7 @@ function tryFormLink(s, i, items, open, refs) {
     const def = refs.get(norm);
     if (!def) return null;
     if (!open.image && linkTextHasLink(items, open)) return null;
-    if (linkTextHasOddBackticks(s, open.textStart, i)) return null;
+    if (linkTextHasOddBackticks(s, open.textStart, i)) { open.backtickBlocked = true; return null; }
     return { open, href: def.href, title: def.title, end: labelEnd + 1 };
   }
   const label = s.slice(open.textStart, i);
@@ -1324,7 +1324,8 @@ function parseInline(s, refs) {
     }
     if (c === 93) { // ]
       if (opens.length > 0) {
-        const link = tryFormLink(s, i, items, opens[opens.length - 1], refs);
+        const open = opens[opens.length - 1];
+        const link = tryFormLink(s, i, items, open, refs);
         if (link) {
           flush(i);
           const openIdx = items.indexOf(link.open);
@@ -1338,6 +1339,15 @@ function parseInline(s, refs) {
           i = link.end;
           textStart = i;
           continue;
+        }
+        // A link blocked by odd backtick parity also kills emphasis
+        // inside its text (marked: `[a _b \`\`c \` d\`\`_ e](u)` leaves
+        // the `_` literal).
+        if (open.backtickBlocked) {
+          const openIdx = items.indexOf(open);
+          for (let k = openIdx + 1; k < items.length; k++) {
+            if (items[k].k === 1) items[k].active = false;
+          }
         }
         // This opener cannot form a link here; deactivate it so a later
         // ']' tries an outer opener.
