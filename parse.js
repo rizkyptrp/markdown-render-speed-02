@@ -945,10 +945,21 @@ function resolveEmphasis(items) {
         delims[d].active = false;
       }
       // openersBottom is set when a closer that can itself open pairs with
-      // an opener that cannot close: later len-1 closers may not use
-      // openers at or below that opener. (When the opener can also close,
-      // e.g. `*foo**bar**baz*`, no bottom is set and the outer em forms.)
-      if (closer.canOpen && closer.ch !== '~' && !opener.canClose) openersBottom.set(closer.ch, oi);
+      // an opener that cannot close. For a strong match, always; for an
+      // em match, only when an earlier unmatched opener of the same char
+      // has length >= 2 (so a later strong closer can still use it:
+      // `**a *b* c**` forms strong, but `*a *b* c*` forms the outer em).
+      if (closer.canOpen && closer.ch !== '~' && !opener.canClose) {
+        let setBottom = n === 2;
+        if (!setBottom) {
+          for (let b = oi - 1; b >= 0; b--) {
+            const prev = delims[b];
+            if (prev.ch !== closer.ch || !prev.active || prev.len === 0 || !prev.canOpen) continue;
+            if (prev.len >= 2) { setBottom = true; break; }
+          }
+        }
+        if (setBottom) openersBottom.set(closer.ch, oi);
+      }
       if (opener.len === 0) oi--;
     }
     // A closer that matched nothing and was blocked by the odd-match rule
@@ -1795,8 +1806,10 @@ class DocParser {
     }
     // Inside a table, a line of 0-3 spaces plus exactly one tab is not
     // blank (marked treats it as an empty row); any other whitespace-only
-    // line still ends the table.
-    if (isBlank && this.leaf && this.leaf.t === 'table') {
+    // line still ends the table. The tab line must be a complete line
+    // (followed by a newline), not trailing whitespace at EOF.
+    if (isBlank && this.leaf && this.leaf.t === 'table' &&
+        (li < this.lines.length - 1 || this.endsWithNL)) {
       const rest = cursor.rest();
       let sp = 0;
       while (sp < rest.length && rest.charCodeAt(sp) === 32) sp++;
