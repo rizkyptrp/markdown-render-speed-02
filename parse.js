@@ -996,9 +996,11 @@ function resolveEmphasis(items) {
         // be used by a closer that can open, or one that still has
         // delimiters left after the match (marked: `*foo**bar** baz*`
         // matches the outer `*`, but `*foo**bar***` forms strong).
+        // Only strong matches are blocked; an em match on an oddFailed
+        // opener is fine (marked: `**a *b* c**` forms the inner em).
         if (opener.oddFailed && !closer.canOpen) {
           const n2 = (opener.len >= 2 && closer.len >= 2) ? 2 : 1;
-          if (closer.len <= n2) { oi--; continue; }
+          if (n2 === 2 && closer.len <= n2) { oi--; continue; }
         }
       }
       let n, tag;
