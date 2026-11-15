@@ -1855,6 +1855,30 @@ class DocParser {
 
     // Phase 3: lazy continuation or add to the open leaf.
     if (!allMatched) {
+      // A fence or HTML block inside a list item swallows non-breaker
+      // lines (marked: an unindented line inside a list-item fence is
+      // fence content, not the end of the fence). Only when the first
+      // unmatched container is an item (not a quote: quotes do not
+      // swallow). Breakers (new blocks) still close the leaf.
+      if (this.leaf && (this.leaf.t === 'fence' || this.leaf.t === 'html')) {
+        let firstUnmatched = null;
+        for (let d = lastMatched + 1; d < this.stack.length; d++) {
+          const t = this.stack[d].t;
+          if (t === 'quote' || t === 'item') { firstUnmatched = t; break; }
+        }
+        // The leaf must already have content to swallow: a fence needs a
+        // content line (its opening line is not in lines), an HTML block
+        // needs a line beyond its opening line. An HTML block that has
+        // seen its closing tag no longer swallows.
+        const leaf = this.leaf;
+        const hasContent = leaf.t === 'fence' ? leaf.lines.length > 0 : leaf.lines.length > 1;
+        if (firstUnmatched === 'item' && hasContent && !leaf.sawClose &&
+            !this.startsInterruptBlock(cursor) &&
+            !this.lineContinuesList(cursor, lastMatched) &&
+            !this.startsListItemWithContent(cursor)) {
+          if (this.addToLeaf(cursor)) return;
+        }
+      }
       if (this.leaf && this.leaf.t === 'para' && !this.startsInterruptBlock(cursor) &&
           !this.lineContinuesList(cursor, lastMatched) &&
           !this.startsListItemWithContent(cursor)) {
@@ -2034,6 +2058,7 @@ class DocParser {
       const rest = cursor.rest();
       leaf.lines.push(rest);
       leaf.lastLineIdx = this.curLine;
+      if (leaf.htmlClose && rest.trimStart().toLowerCase().startsWith(leaf.htmlClose)) leaf.sawClose = true;
       if (leaf.htmlType <= 5) {
         let found;
         if (leaf.htmlType === 1) found = rest.toLowerCase().indexOf(leaf.htmlEnd) !== -1;
@@ -2409,6 +2434,21 @@ class DocParser {
           const html = { t: 'html', htmlType: hb.type, htmlEnd: hb.end, lines: [line], keepNL: true, lastTerm: true, lastLineIdx: this.curLine };
           this.addBlock(html);
           this.leaf = html;
+          // For type 6, remember the closing tag: once a line contains
+          // it, the block no longer swallows unindented lines in a list.
+          if (hb.type === 6) {
+            const t = line.trimStart();
+            if (t.charCodeAt(0) === 60 && t.length > 1 && isAsciiLetter(t.charCodeAt(1))) {
+              let k = 1;
+              while (k < t.length) {
+                const cc = t.charCodeAt(k);
+                if (!isAsciiLetter(cc) && !isDigitCode(cc) && cc !== 45) break;
+                k++;
+              }
+              html.htmlClose = '</' + t.slice(1, k).toLowerCase() + '>';
+              if (line.toLowerCase().indexOf(html.htmlClose) !== -1) html.sawClose = true;
+            }
+          }
           if (hb.type <= 5) {
             let found;
             if (hb.type === 1) found = line.toLowerCase().indexOf(hb.end) !== -1;
