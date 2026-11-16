@@ -1353,6 +1353,9 @@ function parseInline(s, refs) {
         canOpen = fl.left;
         canClose = fl.right;
       }
+      // A run that can neither open nor close can never form emphasis:
+      // leave it as plain text (no delimiter object, no resolveEmphasis work).
+      if (!canOpen && !canClose) { i = j; continue; }
       flush(i);
       items.push({ k: 1, ch, len, orig: len, canOpen, canClose, active: true, uo: [], uc: [] });
       i = j;
