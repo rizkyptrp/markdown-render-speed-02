@@ -893,11 +893,14 @@ function linkTextHasLink(items, open) {
 // Marked's link tokenizer pairs backtick runs in the link text; an
 // ODD number of unescaped backtick runs blocks an inline or full-ref
 // link/image from forming — unless the link text ends with a backtick
-// run (a trailing code span: `[a \`\`b \` c\`\`](u)` links, but
-// `[a \`\`b \` c\`\` d](u)` does not). Escaped backticks (`\``) do not
-// count. Shortcut refs are unaffected.
+// run that closes a code span (a matching run of the same length
+// earlier: `[a \`\`b \` c\`\`](u)` links, but `[a \`b](u)` and
+// `[foo\`](/uri)` do not). Escaped backticks (`\``) do not count.
+// Shortcut refs are unaffected.
 function linkTextHasOddBackticks(s, start, end) {
   let runs = 0;
+  let lastLen = 0;
+  let lastPos = -1;
   let p = start;
   while (p < end) {
     if (s.charCodeAt(p) === 96) {
@@ -907,17 +910,33 @@ function linkTextHasOddBackticks(s, start, end) {
       while (q >= start && s.charCodeAt(q) === 92) { bs++; q--; }
       if (bs % 2 === 0) {
         runs++;
-        // Skip the rest of this run.
+        const runStart = p;
         while (p < end && s.charCodeAt(p) === 96) p++;
+        lastLen = p - runStart;
+        lastPos = runStart;
         continue;
       }
     }
     p++;
   }
   if (runs % 2 === 0) return false;
-  // A trailing backtick run (code span at the end of the link text)
+  // A trailing run that closes a code span (matching opener earlier)
   // does not block.
-  return s.charCodeAt(end - 1) !== 96;
+  if (lastPos === -1 || lastPos + lastLen !== end) return true;
+  for (let q = start; q < lastPos; q++) {
+    if (s.charCodeAt(q) === 96) {
+      let bs = 0;
+      let r = q - 1;
+      while (r >= start && s.charCodeAt(r) === 92) { bs++; r--; }
+      if (bs % 2 === 0) {
+        let len = 0;
+        while (q + len < lastPos && s.charCodeAt(q + len) === 96) len++;
+        if (len === lastLen) return false;
+        q += len - 1;
+      }
+    }
+  }
+  return true;
 }
 
 function tryFormLink(s, i, items, open, refs) {
@@ -1271,11 +1290,27 @@ function parseInline(s, refs) {
     if (c === 96) { // backtick
       const cs = parseCodeSpan(s, i);
       if (cs) {
-        flush(i);
-        items.push({ k: 4, s: cs[0] });
-        i = cs[1];
-        textStart = i;
-        continue;
+        // Marked matches a link before a code span: a code span must not
+        // swallow a `]` that closes an open bracket and forms a link
+        // (marked: `[a \`b\` c](#u) [d \`e\`](#v)` forms both links, not
+        // a code span from the first `` ` `` to the third). If the `]`
+        // would not form a link (e.g. odd backtick parity, cm-525), the
+        // code span wins.
+        let blocked = false;
+        if (opens.length > 0) {
+          let j = s.indexOf(']', i + 1);
+          while (j !== -1 && j < cs[1]) {
+            if (tryFormLink(s, j, items, opens[opens.length - 1], refs)) { blocked = true; break; }
+            j = s.indexOf(']', j + 1);
+          }
+        }
+        if (!blocked) {
+          flush(i);
+          items.push({ k: 4, s: cs[0] });
+          i = cs[1];
+          textStart = i;
+          continue;
+        }
       }
       // No matching closer: the whole run is literal text.
       let j = i + 1;
@@ -1345,12 +1380,20 @@ function parseInline(s, refs) {
           continue;
         }
         // A link blocked by odd backtick parity also kills emphasis
-        // inside its text (marked: `[a _b \`\`c \` d\`\`_ e](u)` leaves
-        // the `_` literal).
+        // inside its text — but only when a code span in the text
+        // contains a backtick itself (marked: `[a _b \`\`c \` d\`\`_ e](u)`
+        // leaves the `_` literal, but `[a _b \`c \` d\`_ e](u)` forms
+        // the em).
         if (open.backtickBlocked) {
           const openIdx = items.indexOf(open);
+          let nestedTick = false;
           for (let k = openIdx + 1; k < items.length; k++) {
-            if (items[k].k === 1) items[k].active = false;
+            if (items[k].k === 4 && items[k].s.indexOf('`') !== -1) { nestedTick = true; break; }
+          }
+          if (nestedTick) {
+            for (let k = openIdx + 1; k < items.length; k++) {
+              if (items[k].k === 1) items[k].active = false;
+            }
           }
         }
         // This opener cannot form a link here; deactivate it so a later
@@ -1432,6 +1475,35 @@ function parseInline(s, refs) {
     i++;
   }
   flush(n);
+  // A link whose text holds unmatched backticks, followed later by a code
+  // span, kills emphasis between the link and that code span (marked:
+  // `[a \`\`b\` c](u) *d* e \`f\`` leaves `*d*` literal — the stray
+  // backtick in the link text pairs with the later code span's opener).
+  // The code span may sit inside a later link's text.
+  const hasCodeSpan = (item) => {
+    if (item.k === 4) return true;
+    if ((item.k === 2 || item.k === 3) && item.children) {
+      return item.children.some(hasCodeSpan);
+    }
+    return false;
+  };
+  for (let li = 0; li < items.length; li++) {
+    const it = items[li];
+    if ((it.k !== 2 && it.k !== 3) || !it.children) continue;
+    let strayTick = false;
+    for (const ch of it.children) {
+      if (ch.k === 0 && ch.s.indexOf('`') !== -1) { strayTick = true; break; }
+    }
+    if (!strayTick) continue;
+    for (let ci = li + 1; ci < items.length; ci++) {
+      if (hasCodeSpan(items[ci])) {
+        for (let d = li + 1; d < ci; d++) {
+          if (items[d].k === 1) items[d].active = false;
+        }
+        break;
+      }
+    }
+  }
   resolveEmphasis(items);
   resolveEmails(items, inLinkStart);
   return renderInline(items);
@@ -1898,14 +1970,21 @@ class DocParser {
     // get this treatment (a deeply nested list keeps the absolute column).
     let tabBaseCol = 0;
     let innermostIsQuote = false;
+    let quoteNoSpace = false;
     for (let d = 1; d < this.stack.length; d++) {
       const container = this.stack[d];
       const saved = cursor.save();
       let ok = true;
       if (container.t === 'quote') {
         tabBaseCol = cursor.col;
+        const colBefore = cursor.col;
         ok = this.matchBlockquote(cursor);
-        if (ok) innermostIsQuote = true;
+        if (ok) {
+          innermostIsQuote = true;
+          // A `>` with no space after it still counts as a 2-column
+          // prefix for tab expansion (marked: `>\t` -> 2 spaces).
+          quoteNoSpace = cursor.col - colBefore < 2;
+        }
       } else if (container.t === 'item') {
         ok = this.matchListItem(cursor, container);
         if (ok) innermostIsQuote = false;
@@ -1913,7 +1992,7 @@ class DocParser {
       if (!ok) { cursor.restore(saved); break; }
       lastMatched = d;
     }
-    this.tabBaseCol = innermostIsQuote ? tabBaseCol : 0;
+    this.tabBaseCol = innermostIsQuote ? tabBaseCol - (quoteNoSpace ? 1 : 0) : 0;
     const allMatched = lastMatched === this.stack.length - 1;
     // Blankness: if all containers matched and the innermost one is a
     // blockquote, the line is blank only when nothing remains after the
