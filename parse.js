@@ -549,11 +549,15 @@ function matchAutolink(s, i, limit) {
   }
   if (c === 104 || c === 72 || c === 102 || c === 70) { // http/https/ftp
     let prefixLen = 0;
-    const lower = s.slice(i, i + 8).toLowerCase();
-    if (lower.startsWith('http://')) prefixLen = 7;
-    else if (lower.startsWith('https://')) prefixLen = 8;
-    else if (lower.startsWith('ftp://')) prefixLen = 6;
-    else return null;
+    // Case-insensitive prefix check without slice+toLowerCase allocation.
+    const c1 = s.charCodeAt(i + 1) | 32, c2 = s.charCodeAt(i + 2) | 32, c3 = s.charCodeAt(i + 3) | 32;
+    if ((c | 32) === 104 && c1 === 116 && c2 === 116 && c3 === 112) { // http
+      if (s.charCodeAt(i + 4) === 58 && s.charCodeAt(i + 5) === 47 && s.charCodeAt(i + 6) === 47) prefixLen = 7;
+      else if ((s.charCodeAt(i + 4) | 32) === 115 && s.charCodeAt(i + 5) === 58 && s.charCodeAt(i + 6) === 47 && s.charCodeAt(i + 7) === 47) prefixLen = 8;
+      else return null;
+    } else if ((c | 32) === 102 && c1 === 116 && c2 === 112 && s.charCodeAt(i + 3) === 58 && s.charCodeAt(i + 4) === 47 && s.charCodeAt(i + 5) === 47) { // ftp://
+      prefixLen = 6;
+    } else return null;
     const start = i + prefixLen;
     if (start >= end) return null;
     const sc = s.charCodeAt(start);
