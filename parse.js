@@ -1237,6 +1237,11 @@ function renderInline(items) {
   return out;
 }
 
+// Special chars for the parseInline scan: structural chars plus the
+// letters that can start a bare autolink (w/h/H/f/F/m/x). The regex jump
+// skips plain-text runs far faster than a char-by-char loop.
+const INLINE_SPECIAL_RE = /[\\\n`*_~\[\]!<>whHfFmx]/g;
+
 function parseInline(s, refs) {
   const items = [];
   const opens = [];
@@ -1248,7 +1253,12 @@ function parseInline(s, refs) {
   const inLinkStart = inLinkGlobal;
   const flush = (upTo) => { if (upTo > textStart) items.push({ k: 0, s: s.slice(textStart, upTo) }); };
   let i = 0;
+  INLINE_SPECIAL_RE.lastIndex = 0;
   while (i < n) {
+    INLINE_SPECIAL_RE.lastIndex = i;
+    const m = INLINE_SPECIAL_RE.exec(s);
+    if (!m) break;
+    i = m.index;
     const c = s.charCodeAt(i);
     if (c === 92) { // backslash
       if (i + 1 < n) {
