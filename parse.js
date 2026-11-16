@@ -2193,6 +2193,18 @@ class DocParser {
 
   stripParagraphDefs(leaf) {
     const content = leaf.lines.join('\n');
+    // Fast path: a link ref def must start with `[` after up to 3 spaces
+    // of indent. If the paragraph doesn't, there are no defs to strip.
+    let i = 0;
+    let indent = 0;
+    const n = content.length;
+    while (i < n && indent < 3) {
+      const c = content.charCodeAt(i);
+      if (c === 32) { indent++; i++; }
+      else if (c === 9) { const toNext = 4 - (indent % 4); if (indent + toNext > 3) break; indent += toNext; i++; }
+      else break;
+    }
+    if (i >= n || content.charCodeAt(i) !== 91) return content;
     let pos = 0;
     while (true) {
       const def = parseLinkRefDef(content, pos);
