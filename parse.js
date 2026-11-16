@@ -1978,10 +1978,11 @@ class DocParser {
       const saved = cursor.save();
       let ok = true;
       if (container.t === 'quote') {
-        tabBaseCol = cursor.col;
+        const colBeforeQuote = cursor.col;
         const colBefore = cursor.col;
         ok = this.matchBlockquote(cursor);
         if (ok) {
+          tabBaseCol = colBeforeQuote;
           innermostIsQuote = true;
           // A `>` with no space after it still counts as a 2-column
           // prefix for tab expansion (marked: `>\t` -> 2 spaces).
@@ -2129,6 +2130,7 @@ class DocParser {
           cursor.skipIndent(4);
           content = cursor.rest();
         }
+        if (this.stack.length > 1) content = expandLeadingTabs(content, cursor.col - this.tabBaseCol);
         this.leaf.lines.push(content);
         this.leaf.lastLazy = true;
         return;
