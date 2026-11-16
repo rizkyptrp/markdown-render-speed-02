@@ -1475,10 +1475,11 @@ function parseInline(s, refs) {
     i++;
   }
   flush(n);
-  // A link whose text holds unmatched backticks, followed later by a code
-  // span, kills emphasis between the link and that code span (marked:
-  // `[a \`\`b\` c](u) *d* e \`f\`` leaves `*d*` literal — the stray
-  // backtick in the link text pairs with the later code span's opener).
+  // A link whose text holds unmatched backticks, followed later by code
+  // spans, kills emphasis between the link and the LAST such code span
+  // (marked: `[a \`\`b\` c](u) *d* \`f\` *h* \`j\`` leaves both `*d*`
+  // and `*h*` literal, but without the trailing `` `j` `` the `*h*`
+  // forms — the stray backtick pairs with the last backtick).
   // The code span may sit inside a later link's text.
   const hasCodeSpan = (item) => {
     if (item.k === 4) return true;
@@ -1492,15 +1493,16 @@ function parseInline(s, refs) {
     if ((it.k !== 2 && it.k !== 3) || !it.children) continue;
     let strayTick = false;
     for (const ch of it.children) {
-      if (ch.k === 0 && ch.s.indexOf('`') !== -1) { strayTick = true; break; }
+      if (ch.k === 0 && !ch.esc && ch.s.indexOf('`') !== -1) { strayTick = true; break; }
     }
     if (!strayTick) continue;
+    let lastCs = -1;
     for (let ci = li + 1; ci < items.length; ci++) {
-      if (hasCodeSpan(items[ci])) {
-        for (let d = li + 1; d < ci; d++) {
-          if (items[d].k === 1) items[d].active = false;
-        }
-        break;
+      if (hasCodeSpan(items[ci])) lastCs = ci;
+    }
+    if (lastCs !== -1) {
+      for (let d = li + 1; d < lastCs; d++) {
+        if (items[d].k === 1) items[d].active = false;
       }
     }
   }
