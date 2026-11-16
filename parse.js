@@ -1959,10 +1959,6 @@ class DocParser {
 
   processLine(li) {
     const line = this.lines[li];
-    if (this.htmlPending && this.htmlPending.nextLine === li) {
-      if (line === '') this.htmlPending.node.keepNL = false;
-      this.htmlPending = null;
-    }
     const cursor = new LineCursor(line);
     // Phase 1: match open containers top-down.
     let lastMatched = 0;
@@ -2023,6 +2019,15 @@ class DocParser {
       let sp = 0;
       while (sp < rest.length && rest.charCodeAt(sp) === 32) sp++;
       if (sp <= 3 && sp + 1 === rest.length && rest.charCodeAt(sp) === 9) isBlank = false;
+    }
+
+    // An HTML block that ended on its first line keeps its trailing newline
+    // unless the next line is empty after container-prefix removal (a
+    // truly empty line, or a `>` quote-blank line). A whitespace-only line
+    // (`\t`, ` `) does NOT clear it (marked keeps the `\n` there).
+    if (this.htmlPending && this.htmlPending.nextLine === li) {
+      if (cursor.i >= cursor.s.length && cursor.spaces === 0) this.htmlPending.node.keepNL = false;
+      this.htmlPending = null;
     }
 
     // Phase 2: blank line.
@@ -2150,7 +2155,10 @@ class DocParser {
     cursor.skipIndent(3);
     if (cursor.cur() !== 62) { cursor.restore(saved); return false; }
     cursor.advance();
-    if (cursor.cur() === 32 || cursor.cur() === 9) cursor.consumeOneColumn();
+    // Only a literal space is consumed after `>`; a tab stays as content
+    // so its expansion uses the effective (tabBaseCol-adjusted) column
+    // (marked: `>\t` in a nested quote expands to 2 spaces, not 3).
+    if (cursor.cur() === 32) cursor.consumeOneColumn();
     return true;
   }
 
