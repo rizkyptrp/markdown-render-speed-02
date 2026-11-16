@@ -1748,28 +1748,38 @@ function htmlBlockType(rest) {
 
 // Split a table row line into cells. Handles \| (odd backslash runs).
 function splitTableRow(line) {
+  // Fast path: no backslash, so pipes are all cell separators.
+  if (line.indexOf('\\') === -1) {
+    let cells = line.split('|');
+    const trimmed = line.trim();
+    if (cells.length > 1 && trimmed.charCodeAt(0) === 124) cells.shift();
+    if (cells.length > 1 && trimmed.charCodeAt(trimmed.length - 1) === 124) cells.pop();
+    for (let i = 0; i < cells.length; i++) cells[i] = cells[i].trim();
+    return cells;
+  }
   const cells = [];
-  let cur = '';
-  let backslashes = 0;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '\\') { backslashes++; cur += c; continue; }
-    if (c === '|') {
-      if (backslashes % 2 === 1) {
-        // Escaped pipe: drop the backslash, keep the literal pipe.
-        cur = cur.slice(0, -1) + c;
-        backslashes = 0;
-        continue;
-      }
-      cells.push(cur);
-      cur = '';
-      backslashes = 0;
+  let start = 0;
+  let idx = line.indexOf('|', start);
+  while (idx !== -1) {
+    // Count backslashes immediately before the pipe.
+    let bs = 0;
+    let j = idx - 1;
+    while (j >= start && line.charCodeAt(j) === 92) { bs++; j--; }
+    if (bs % 2 === 1) {
+      // Escaped pipe: keep scanning (the backslash is dropped below).
+      idx = line.indexOf('|', idx + 1);
       continue;
     }
-    backslashes = 0;
-    cur += c;
+    let cell = line.slice(start, idx);
+    // Drop backslashes that escape pipes inside the cell.
+    if (cell.indexOf('\\|') !== -1) cell = cell.replace(/\\\|/g, '|');
+    cells.push(cell);
+    start = idx + 1;
+    idx = line.indexOf('|', start);
   }
-  cells.push(cur);
+  let cell = line.slice(start);
+  if (cell.indexOf('\\|') !== -1) cell = cell.replace(/\\\|/g, '|');
+  cells.push(cell);
   const trimmed = line.trim();
   if (cells.length > 1 && trimmed.charCodeAt(0) === 124) cells.shift();
   if (cells.length > 1 && trimmed.charCodeAt(trimmed.length - 1) === 124) cells.pop();
