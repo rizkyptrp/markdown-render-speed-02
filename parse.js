@@ -1112,19 +1112,25 @@ function resolveEmails(items, inLinkStart) {
     // (e.g. an escaped '&' followed by 'ouml;'), and an escaped char is
     // a barrier for email local-part scanning.
     const run = [];
-    let merged = '';
+    let hasAt = false;
     while (i < items.length) {
       const it2 = items[i];
       const tl = (it2.k === 0 && !it2.esc) || (it2.k === 1 && it2.uo.length === 0 && it2.uc.length === 0 && it2.len > 0);
       if (!tl) break;
       const str = it2.k === 0 ? it2.s : it2.ch.repeat(it2.len);
-      run.push({ start: merged.length, str, item: it2 });
-      merged += str;
+      if (!hasAt && str.indexOf('@') !== -1) hasAt = true;
+      run.push({ str, item: it2 });
       i++;
     }
-    if (merged.indexOf('@') === -1 || inLink) {
+    if (!hasAt || inLink) {
       for (let r = 0; r < run.length; r++) out.push(run[r].item);
       continue;
+    }
+    // Build the merged view (only needed when an email might form).
+    let merged = '';
+    for (let r = 0; r < run.length; r++) {
+      run[r].start = merged.length;
+      merged += run[r].str;
     }
     // Scan for emails in the merged view; emit non-email spans from the
     // ORIGINAL items so entity boundaries are preserved.
